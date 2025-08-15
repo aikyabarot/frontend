@@ -1,0 +1,206 @@
+name: Human-in-the-Loop Agent Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Task prompt for the agent'
+        required: true
+        type: string
+      auto_merge:
+        description: 'Enable auto-merge when PR is clean'
+        required: false
+        type: boolean
+        default: false
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && 
+       (startsWith(github.event.comment.body, '/agent') || 
+        startsWith(github.event.comment.body, '/agent --auto')))
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Parse command and inputs
+        id: parse
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "prompt=${{ github.event.inputs.prompt }}" >> $GITHUB_OUTPUT
+            echo "auto_merge=${{ github.event.inputs.auto_merge }}" >> $GITHUB_OUTPUT
+            echo "trigger=manual" >> $GITHUB_OUTPUT
+          else
+            # Parse issue comment for /agent command
+            COMMENT="${{ github.event.comment.body }}"
+            if [[ "$COMMENT" == "/agent --auto"* ]]; then
+              echo "auto_merge=true" >> $GITHUB_OUTPUT
+              echo "prompt=${COMMENT#/agent --auto }" >> $GITHUB_OUTPUT
+            elif [[ "$COMMENT" == "/agent"* ]]; then
+              echo "auto_merge=false" >> $GITHUB_OUTPUT
+              echo "prompt=${COMMENT#/agent }" >> $GITHUB_OUTPUT
+            fi
+            echo "trigger=comment" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate branch name
+        id: branch
+        run: |
+          TIMESTAMP=$(date +%s)
+          RANDOM_ID=$(openssl rand -hex 4)
+          BRANCH_NAME="agent/task-${TIMESTAMP}-${RANDOM_ID}"
+          echo "name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create and switch to new branch
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Agent"
+          git checkout -b ${{ steps.branch.outputs.name }}
+
+      - name: Agent task execution placeholder
+        id: execute
+        run: |
+          # This is a placeholder for the actual agent logic
+          # In a real implementation, this would:
+          # 1. Analyze the prompt
+          # 2. Make appropriate code changes
+          # 3. Run tests and validations
+          # 4. Prepare commit message
+          
+          echo "Executing agent task: ${{ steps.parse.outputs.prompt }}"
+          
+          # For now, create a simple demonstration file
+          mkdir -p agent-logs
+          echo "Task: ${{ steps.parse.outputs.prompt }}" > agent-logs/task-$(date +%Y%m%d-%H%M%S).md
+          echo "Timestamp: $(date)" >> agent-logs/task-$(date +%Y%m%d-%H%M%S).md
+          echo "Auto-merge: ${{ steps.parse.outputs.auto_merge }}" >> agent-logs/task-$(date +%Y%m%d-%H%M%S).md
+          
+          git add agent-logs/
+          
+          # Set output for whether changes were made
+          if [[ -n "$(git diff --staged)" ]]; then
+            echo "changes_made=true" >> $GITHUB_OUTPUT
+            echo "commit_message=Agent task: ${{ steps.parse.outputs.prompt }}" >> $GITHUB_OUTPUT
+          else
+            echo "changes_made=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit changes
+        if: steps.execute.outputs.changes_made == 'true'
+        run: |
+          git commit -m "${{ steps.execute.outputs.commit_message }}"
+          git push origin ${{ steps.branch.outputs.name }}
+
+      - name: Create Pull Request
+        if: steps.execute.outputs.changes_made == 'true'
+        id: create_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Agent Task: ${{ steps.parse.outputs.prompt }}`,
+              head: '${{ steps.branch.outputs.name }}',
+              base: 'main',
+              body: `
+            ## Agent-Generated PR
+            
+            **Task:** ${{ steps.parse.outputs.prompt }}
+            **Trigger:** ${{ steps.parse.outputs.trigger }}
+            **Auto-merge enabled:** ${{ steps.parse.outputs.auto_merge }}
+            
+            This PR was automatically created by the human-in-the-loop agent workflow.
+            
+            ### Changes Made:
+            - Added agent task log file
+            
+            ${{ steps.parse.outputs.auto_merge == 'true' && '🤖 **Auto-merge is enabled** - This PR will be automatically approved and merged if all checks pass.' || '👀 **Manual review required** - Please review and approve this PR manually.' }}
+              `
+            });
+            
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_url', pr.html_url);
+            
+            return pr.number;
+
+      - name: Auto-approve PR (if auto_merge enabled)
+        if: steps.execute.outputs.changes_made == 'true' && steps.parse.outputs.auto_merge == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.create_pr.outputs.pr_number }},
+              event: 'APPROVE',
+              body: '✅ Auto-approved by agent workflow'
+            });
+
+      - name: Enable auto-merge (if auto_merge enabled and PR is clean)
+        if: steps.execute.outputs.changes_made == 'true' && steps.parse.outputs.auto_merge == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.pulls.enableAutoMerge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: ${{ steps.create_pr.outputs.pr_number }},
+                merge_method: 'squash'
+              });
+              console.log('Auto-merge enabled successfully');
+            } catch (error) {
+              console.log('Auto-merge could not be enabled:', error.message);
+              // This might fail if branch protection rules require reviews
+              // or if there are merge conflicts
+            }
+
+      - name: Comment on original issue/PR (if triggered by comment)
+        if: steps.parse.outputs.trigger == 'comment' && steps.execute.outputs.changes_made == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prUrl = '${{ steps.create_pr.outputs.pr_url }}';
+            const autoMerge = '${{ steps.parse.outputs.auto_merge }}' === 'true';
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🤖 Agent task completed! 
+              
+              **Created PR:** ${prUrl}
+              **Auto-merge:** ${autoMerge ? '✅ Enabled' : '❌ Disabled'}
+              
+              ${autoMerge ? 'The PR will be automatically merged if all checks pass.' : 'Please review and merge the PR manually.'}`
+            });
+
+      - name: No changes notification
+        if: steps.execute.outputs.changes_made == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if ('${{ steps.parse.outputs.trigger }}' === 'comment') {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `🤖 Agent task completed, but no changes were needed for: "${{ steps.parse.outputs.prompt }}"`
+              });
+            }
+            console.log('No changes were made by the agent task');

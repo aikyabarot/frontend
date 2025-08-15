@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import { createContext, useContext, useMemo, useState, useEffect, useCallback } from 'react';
 
 // Minimal in-memory data to preserve current functionality without TS types
 const mockCandidates = [
@@ -32,37 +32,37 @@ export function AppProvider({ children }) {
   const [jobs] = useState(mockJobs);
   const [candidates] = useState(mockCandidates);
 
-  const login = (email) => {
-    const name = email.split('@')[0];
-    setActiveUser({ id: 'user-1', name: name.charAt(0).toUpperCase() + name.slice(1), email, role: 'Recruiter' });
-    navigate('dashboard');
-  };
-
-  const logout = () => {
-    setActiveUser(null);
-    setCurrentPage('login');
-  };
-
-  const navigate = (page, context = null) => {
+  const navigate = useCallback((page, context = null) => {
     setCurrentPage(page);
     setPageContext(context);
-  };
+  }, []);
 
-  const openCandidateModal = (candidateId) => {
+  const login = useCallback((email) => {
+    const name = email.split('@')[0];
+    setActiveUser({ id: 'user-1', name: name.charAt(0).toUpperCase() + name.slice(1), email, role: 'Recruiter' });
+    setCurrentPage('dashboard');
+  }, []);
+
+  const logout = useCallback(() => {
+    setActiveUser(null);
+    setCurrentPage('login');
+  }, []);
+
+  const openCandidateModal = useCallback((candidateId) => {
     setSelectedCandidateId(candidateId);
     setCandidateModalOpen(true);
-  };
+  }, []);
 
-  const closeCandidateModal = () => {
+  const closeCandidateModal = useCallback(() => {
     setCandidateModalOpen(false);
     setSelectedCandidateId(null);
-  };
+  }, []);
 
-  const showToast = (message) => {
+  const showToast = useCallback((message) => {
     setToastMessage(message);
-  };
+  }, []);
 
-  const addClientContact = (clientId, newContact) => {
+  const addClientContact = useCallback((clientId, newContact) => {
     const newContactId = Math.max(...clients.flatMap(c => c.contacts?.map(ct => ct.contactId) || [0]), 0) + 1;
     const contactToAdd = { ...newContact, contactId: newContactId };
     const updatedClients = clients.map(client => {
@@ -72,22 +72,22 @@ export function AppProvider({ children }) {
       return client;
     });
     setClients(updatedClients);
-    showToast('Contact added successfully!');
-  };
+    setToastMessage('Contact added successfully!');
+  }, [clients]);
 
-  const getCandidateProfile = (candidateId) => {
+  const getCandidateProfile = useCallback((candidateId) => {
     const candidate = candidates.find(c => c.id === candidateId);
     if (!candidate) return undefined;
     const job = jobs.find(j => j.id === candidate.associatedJobId);
     if (!job) return undefined;
     return { ...candidate, job };
-  };
+  }, [candidates, jobs]);
 
-  const getClient = (clientId) => clients.find(c => c.id === clientId);
-  const getJobsForClient = (clientId) => jobs.filter(j => j.clientId === clientId);
-  const getOpenJobsCount = () => jobs.filter(j => j.status === 'Open').length;
-  const getJobs = () => jobs;
-  const getClients = () => clients;
+  const getClient = useCallback((clientId) => clients.find(c => c.id === clientId), [clients]);
+  const getJobsForClient = useCallback((clientId) => jobs.filter(j => j.clientId === clientId), [jobs]);
+  const getOpenJobsCount = useCallback(() => jobs.filter(j => j.status === 'Open').length, [jobs]);
+  const getJobs = useCallback(() => jobs, [jobs]);
+  const getClients = useCallback(() => clients, [clients]);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -123,9 +123,20 @@ export function AppProvider({ children }) {
     isCandidateModalOpen,
     selectedCandidateId,
     toastMessage,
-    clients,
-    jobs,
-    candidates
+    candidates,
+    login,
+    logout,
+    navigate,
+    openCandidateModal,
+    closeCandidateModal,
+    showToast,
+    addClientContact,
+    getCandidateProfile,
+    getClient,
+    getJobsForClient,
+    getOpenJobsCount,
+    getJobs,
+    getClients
   ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
