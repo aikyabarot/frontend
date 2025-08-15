@@ -4,7 +4,8 @@ const autoprefixer = require("autoprefixer");
 module.exports = {
   style: {
     postcss: {
-      plugins: [tailwindcss, autoprefixer],
+      mode: "extends",
+      plugins: [tailwindcss(), autoprefixer()],
     },
   },
 };
