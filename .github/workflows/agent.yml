@@ -1,0 +1,500 @@
+name: AI Agent PR Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Natural language prompt for changes'
+        required: true
+        type: string
+      authorized_users:
+        description: 'Comma-separated list of authorized GitHub usernames'
+        required: false
+        default: 'aikyabarot'
+        type: string
+  
+  issue_comment:
+    types: [created]
+
+env:
+  AUTHORIZED_USERS: ${{ github.event.inputs.authorized_users || 'aikyabarot' }}
+  MAX_FILES: 10
+  MAX_FILE_SIZE: 10240  # 10KB per file
+
+jobs:
+  authorization-check:
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+      prompt: ${{ steps.extract.outputs.prompt }}
+    steps:
+      - name: Check authorization
+        id: auth
+        run: |
+          TRIGGER_USER="${{ github.actor }}"
+          AUTHORIZED_LIST="${{ env.AUTHORIZED_USERS }}"
+          
+          echo "Checking authorization for user: $TRIGGER_USER"
+          echo "Authorized users: $AUTHORIZED_LIST"
+          
+          if echo "$AUTHORIZED_LIST" | grep -q "\b$TRIGGER_USER\b"; then
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            echo "✅ User $TRIGGER_USER is authorized"
+          else
+            echo "authorized=false" >> $GITHUB_OUTPUT
+            echo "❌ User $TRIGGER_USER is not authorized"
+          fi
+
+      - name: Extract prompt
+        id: extract
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PROMPT="${{ github.event.inputs.prompt }}"
+            echo "Prompt from workflow_dispatch: $PROMPT"
+          elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+            COMMENT_BODY="${{ github.event.comment.body }}"
+            if echo "$COMMENT_BODY" | grep -q "^/agent"; then
+              # Extract prompt after /agent command
+              PROMPT=$(echo "$COMMENT_BODY" | sed 's|^/agent[[:space:]]*||')
+              echo "Prompt from issue comment: $PROMPT"
+            else
+              echo "No /agent command found in comment"
+              exit 0
+            fi
+          fi
+          
+          if [ -z "$PROMPT" ]; then
+            echo "No prompt provided"
+            exit 1
+          fi
+          
+          echo "prompt=$PROMPT" >> $GITHUB_OUTPUT
+
+  generate-changes:
+    needs: authorization-check
+    if: needs.authorization-check.outputs.authorized == 'true' && needs.authorization-check.outputs.prompt != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          # Install additional dependencies for the agent script if needed
+          npm install --save-dev @octokit/rest simple-git
+
+      - name: Create agent script directory
+        run: mkdir -p scripts
+
+      - name: Generate agent script
+        run: |
+          cat > scripts/agent.js << 'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const { Octokit } = require('@octokit/rest');
+          const simpleGit = require('simple-git');
+
+          class AgentProcessor {
+            constructor(prompt, options = {}) {
+              this.prompt = prompt;
+              this.maxFiles = options.maxFiles || 10;
+              this.maxFileSize = options.maxFileSize || 10240;
+              this.changes = [];
+              this.git = simpleGit();
+            }
+
+            async processPrompt() {
+              console.log('🤖 Processing prompt:', this.prompt);
+              
+              // Simple prompt analysis and code generation
+              const analysis = this.analyzePrompt(this.prompt);
+              const changes = await this.generateChanges(analysis);
+              
+              return changes;
+            }
+
+            analyzePrompt(prompt) {
+              const lowerPrompt = prompt.toLowerCase();
+              
+              // Basic intent recognition
+              const analysis = {
+                intent: 'unknown',
+                componentName: null,
+                action: null,
+                files: []
+              };
+
+              if (lowerPrompt.includes('add') || lowerPrompt.includes('create')) {
+                analysis.action = 'create';
+                if (lowerPrompt.includes('component')) {
+                  analysis.intent = 'create_component';
+                } else if (lowerPrompt.includes('page')) {
+                  analysis.intent = 'create_page';
+                }
+              } else if (lowerPrompt.includes('update') || lowerPrompt.includes('modify') || lowerPrompt.includes('change')) {
+                analysis.action = 'modify';
+                analysis.intent = 'modify_existing';
+              }
+
+              // Extract component/page name
+              const nameMatch = prompt.match(/(?:component|page)\s+(?:called|named)\s+["']?([A-Za-z][A-Za-z0-9]*?)["']?(?:\s|$|\.)/i);
+              if (nameMatch) {
+                analysis.componentName = nameMatch[1];
+              }
+
+              console.log('📊 Prompt analysis:', analysis);
+              return analysis;
+            }
+
+            async generateChanges(analysis) {
+              const changes = [];
+
+              try {
+                if (analysis.intent === 'create_component' && analysis.componentName) {
+                  const componentChanges = await this.createComponent(analysis.componentName);
+                  changes.push(...componentChanges);
+                } else if (analysis.intent === 'create_page' && analysis.componentName) {
+                  const pageChanges = await this.createPage(analysis.componentName);
+                  changes.push(...pageChanges);
+                } else {
+                  // Default: create a simple documentation file with the prompt
+                  const docChange = await this.createPromptDocumentation();
+                  changes.push(docChange);
+                }
+
+                // Validate changes against safety limits
+                this.validateChanges(changes);
+                
+                return changes;
+              } catch (error) {
+                console.error('Error generating changes:', error);
+                throw error;
+              }
+            }
+
+            async createComponent(componentName) {
+              const componentContent = `import React from 'react';
+
+          export default function ${componentName}() {
+            return (
+              <div className="p-4">
+                <h2 className="text-xl font-semibold mb-4">${componentName}</h2>
+                <p className="text-gray-600">
+                  This component was generated by the AI agent based on your prompt.
+                </p>
+                <div className="mt-4 p-3 bg-blue-50 rounded">
+                  <p className="text-sm text-blue-800">
+                    Original prompt: "${this.prompt}"
+                  </p>
+                </div>
+              </div>
+            );
+          }
+          `;
+
+              const filePath = `src/components/${componentName}.js`;
+              return [{
+                path: filePath,
+                content: componentContent,
+                action: 'create'
+              }];
+            }
+
+            async createPage(pageName) {
+              const pageContent = `import React from 'react';
+
+          export default function ${pageName}Page() {
+            return (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h1 className="text-2xl font-semibold">${pageName}</h1>
+                </div>
+                
+                <div className="bg-white rounded shadow p-6">
+                  <p className="text-gray-600 mb-4">
+                    This page was generated by the AI agent based on your prompt.
+                  </p>
+                  
+                  <div className="bg-blue-50 p-4 rounded">
+                    <h3 className="font-medium text-blue-900 mb-2">Original Prompt</h3>
+                    <p className="text-blue-800 text-sm">${this.prompt}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          `;
+
+              const filePath = `src/pages/${pageName}Page.js`;
+              return [{
+                path: filePath,
+                content: pageContent,
+                action: 'create'
+              }];
+            }
+
+            async createPromptDocumentation() {
+              const timestamp = new Date().toISOString();
+              const docContent = `# AI Agent Generated Changes
+
+          **Timestamp:** ${timestamp}
+          **Triggered by:** ${{ github.actor }}
+          **Prompt:** ${this.prompt}
+
+          ## Analysis
+
+          The AI agent processed your prompt but couldn't determine a specific action to take.
+          This documentation file was created to log the request.
+
+          ## Suggested Next Steps
+
+          To get better results, try prompts like:
+          - "Create a component called UserProfile"
+          - "Add a page called Settings"
+          - "Create a component called ProductCard with props for name and price"
+
+          ## Safety Information
+
+          - Maximum files per request: ${this.maxFiles}
+          - Maximum file size: ${this.maxFileSize} bytes
+          - All changes go through pull request review
+          `;
+
+              return {
+                path: `docs/agent-requests/request-${Date.now()}.md`,
+                content: docContent,
+                action: 'create'
+              };
+            }
+
+            validateChanges(changes) {
+              if (changes.length > this.maxFiles) {
+                throw new Error(`Too many files to change: ${changes.length} > ${this.maxFiles}`);
+              }
+
+              for (const change of changes) {
+                if (change.content.length > this.maxFileSize) {
+                  throw new Error(`File too large: ${change.path} (${change.content.length} > ${this.maxFileSize} bytes)`);
+                }
+              }
+            }
+
+            async applyChanges(changes) {
+              console.log(`📁 Applying ${changes.length} changes...`);
+              
+              for (const change of changes) {
+                const fullPath = path.resolve(change.path);
+                const dir = path.dirname(fullPath);
+                
+                // Create directory if it doesn't exist
+                if (!fs.existsSync(dir)) {
+                  fs.mkdirSync(dir, { recursive: true });
+                  console.log(`📂 Created directory: ${dir}`);
+                }
+
+                // Write file
+                fs.writeFileSync(fullPath, change.content);
+                console.log(`✅ ${change.action}: ${change.path}`);
+
+                // Add to git
+                await this.git.add(change.path);
+              }
+
+              return changes;
+            }
+
+            async createBranchAndCommit() {
+              const branchName = `agent/${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+              
+              console.log(`🌿 Creating branch: ${branchName}`);
+              await this.git.checkoutLocalBranch(branchName);
+              
+              const commitMessage = `🤖 AI Agent: ${this.prompt.substring(0, 50)}${this.prompt.length > 50 ? '...' : ''}`;
+              
+              console.log(`💾 Creating commit: ${commitMessage}`);
+              await this.git.commit(commitMessage);
+              
+              return { branchName, commitMessage };
+            }
+          }
+
+          // Main execution
+          async function main() {
+            try {
+              const prompt = process.env.AGENT_PROMPT;
+              const maxFiles = parseInt(process.env.MAX_FILES) || 10;
+              const maxFileSize = parseInt(process.env.MAX_FILE_SIZE) || 10240;
+
+              console.log('🚀 Starting AI Agent...');
+              console.log('📝 Prompt:', prompt);
+
+              const agent = new AgentProcessor(prompt, { maxFiles, maxFileSize });
+              const changes = await agent.processPrompt();
+              
+              if (changes.length === 0) {
+                console.log('ℹ️  No changes generated');
+                return;
+              }
+
+              await agent.applyChanges(changes);
+              const { branchName, commitMessage } = await agent.createBranchAndCommit();
+
+              // Output for GitHub Actions
+              console.log(`::set-output name=branch_name::${branchName}`);
+              console.log(`::set-output name=commit_message::${commitMessage}`);
+              console.log(`::set-output name=changes_count::${changes.length}`);
+
+              // Create artifact log
+              const artifactLog = {
+                timestamp: new Date().toISOString(),
+                prompt: prompt,
+                user: process.env.GITHUB_ACTOR,
+                branch: branchName,
+                commit: commitMessage,
+                changes: changes.map(c => ({ path: c.path, action: c.action }))
+              };
+
+              fs.writeFileSync('agent-log.json', JSON.stringify(artifactLog, null, 2));
+              console.log('📄 Created artifact log: agent-log.json');
+
+            } catch (error) {
+              console.error('❌ Error:', error.message);
+              process.exit(1);
+            }
+          }
+
+          main();
+          EOF
+
+      - name: Run agent script
+        id: agent
+        env:
+          AGENT_PROMPT: ${{ needs.authorization-check.outputs.prompt }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          MAX_FILES: ${{ env.MAX_FILES }}
+          MAX_FILE_SIZE: ${{ env.MAX_FILE_SIZE }}
+        run: node scripts/agent.js
+
+      - name: Push branch and create PR
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Configure git
+          git config user.name "AI Agent"
+          git config user.email "agent@github.com"
+          
+          # Push the branch
+          BRANCH_NAME=$(cat agent-log.json | grep -o '"branch":"[^"]*' | cut -d'"' -f4)
+          echo "Pushing branch: $BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          
+          # Create pull request using GitHub CLI
+          COMMIT_MSG=$(cat agent-log.json | grep -o '"commit":"[^"]*' | cut -d'"' -f4)
+          PROMPT="${{ needs.authorization-check.outputs.prompt }}"
+          
+          PR_TITLE="🤖 AI Agent: $(echo "$PROMPT" | cut -c1-50)"
+          PR_BODY="## AI Agent Generated Changes
+
+          **Triggered by:** @${{ github.actor }}
+          **Original prompt:** $PROMPT
+
+          ### Changes Summary
+          This PR was automatically generated by the AI Agent based on the natural language prompt above.
+
+          ### Safety Measures Applied
+          - ✅ User authorization verified
+          - ✅ File count limit: ${{ env.MAX_FILES }}
+          - ✅ File size limit: ${{ env.MAX_FILE_SIZE }} bytes
+          - ✅ Changes logged in artifacts
+
+          ### Review Required
+          Please review all changes carefully before merging.
+
+          ---
+          *This PR was created by the AI Agent workflow*"
+
+          # Install GitHub CLI if not available
+          if ! command -v gh &> /dev/null; then
+            curl -fsSL https://github.com/cli/cli/releases/download/v2.40.1/gh_2.40.1_linux_amd64.tar.gz | tar -xzf -
+            sudo cp gh_2.40.1_linux_amd64/bin/gh /usr/local/bin/
+          fi
+
+          gh pr create \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base main
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-logs
+          path: |
+            agent-log.json
+            scripts/agent.js
+          retention-days: 30
+
+      - name: Comment on issue (if triggered by comment)
+        if: github.event_name == 'issue_comment' && success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            BRANCH_NAME=$(cat agent-log.json | grep -o '"branch":"[^"]*' | cut -d'"' -f4)
+            
+            COMMENT="🤖 **AI Agent Response**
+
+            I've processed your request and created a pull request with the generated changes.
+
+            **Branch:** \`$BRANCH_NAME\`
+            **Prompt:** ${{ needs.authorization-check.outputs.prompt }}
+
+            Please review the pull request to see the generated changes.
+
+            ---
+            *Triggered by the AI Agent workflow*"
+
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments \
+              --method POST \
+              --field body="$COMMENT"
+          fi
+
+  unauthorized-response:
+    needs: authorization-check
+    if: needs.authorization-check.outputs.authorized != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post unauthorized message
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            COMMENT="❌ **Access Denied**
+            
+            Sorry @${{ github.actor }}, you are not authorized to use the AI Agent.
+            
+            Authorized users: ${{ env.AUTHORIZED_USERS }}
+            
+            ---
+            *AI Agent Security Check*"
+
+            gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments \
+              --method POST \
+              --field body="$COMMENT"
+          else
+            echo "❌ User ${{ github.actor }} is not authorized to run the AI Agent"
+            echo "Authorized users: ${{ env.AUTHORIZED_USERS }}"
+            exit 1
+          fi
