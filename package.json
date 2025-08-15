@@ -6,7 +6,10 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test"
+    "test": "react-scripts test",
+    "guardian:smoke": "node scripts/guardian/smoke.js",
+    "guardian:plan": "node scripts/guardian/planning.js",
+    "guardian:cleanup": "node scripts/guardian/cleanup.js"
   },
   "dependencies": {
     "autoprefixer": "^10.4.21",

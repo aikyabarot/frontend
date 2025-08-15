@@ -1,0 +1,343 @@
+#!/usr/bin/env node
+
+/**
+ * Guardian Patch Generation Phase
+ * 
+ * Generates code changes based on the planning phase output.
+ * Creates a new branch and applies the requested changes.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+class GuardianPatchGenerator {
+  constructor(options = {}) {
+    this.planPath = options.plan || 'guardian-plan.json';
+    this.branchName = options.branch || '';
+    this.workingDir = process.cwd();
+  }
+
+  log(message) {
+    console.log(`[PATCH-GEN] ${message}`);
+  }
+
+  loadPlan() {
+    if (!fs.existsSync(this.planPath)) {
+      throw new Error(`Plan file not found: ${this.planPath}`);
+    }
+
+    const planContent = fs.readFileSync(this.planPath, 'utf8');
+    return JSON.parse(planContent);
+  }
+
+  generateBranchName(request) {
+    if (this.branchName) return this.branchName;
+    
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    const sanitized = request.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, '')
+      .replace(/\s+/g, '-')
+      .substring(0, 30);
+    
+    return `guardian/${timestamp}-${sanitized}`;
+  }
+
+  createWorkingBranch(branchName) {
+    this.log(`Creating working branch: ${branchName}`);
+    
+    try {
+      // Ensure we're on the target branch and up to date
+      execSync('git fetch origin', { stdio: 'pipe' });
+      execSync('git checkout main', { stdio: 'pipe' });
+      execSync('git pull origin main', { stdio: 'pipe' });
+      
+      // Create new branch
+      execSync(`git checkout -b ${branchName}`, { stdio: 'pipe' });
+      
+      this.log(`Successfully created branch: ${branchName}`);
+      return branchName;
+    } catch (error) {
+      throw new Error(`Failed to create branch: ${error.message}`);
+    }
+  }
+
+  analyzeChangeRequest(request) {
+    this.log('Analyzing change request...');
+    
+    const analysis = {
+      type: 'unknown',
+      scope: [],
+      files: [],
+      complexity: 'low'
+    };
+
+    const lowerRequest = request.toLowerCase();
+    
+    // Determine change type
+    if (lowerRequest.includes('add') || lowerRequest.includes('create')) {
+      analysis.type = 'addition';
+    } else if (lowerRequest.includes('remove') || lowerRequest.includes('delete')) {
+      analysis.type = 'removal';
+    } else if (lowerRequest.includes('modify') || lowerRequest.includes('update') || lowerRequest.includes('change')) {
+      analysis.type = 'modification';
+    } else if (lowerRequest.includes('fix') || lowerRequest.includes('bug')) {
+      analysis.type = 'bugfix';
+    } else if (lowerRequest.includes('refactor')) {
+      analysis.type = 'refactor';
+    }
+
+    // Determine scope
+    if (lowerRequest.includes('component')) analysis.scope.push('components');
+    if (lowerRequest.includes('style') || lowerRequest.includes('css')) analysis.scope.push('styling');
+    if (lowerRequest.includes('api') || lowerRequest.includes('service')) analysis.scope.push('api');
+    if (lowerRequest.includes('test')) analysis.scope.push('testing');
+    if (lowerRequest.includes('config')) analysis.scope.push('configuration');
+
+    // Determine complexity
+    const complexityIndicators = ['complex', 'multiple', 'refactor', 'restructure', 'major'];
+    if (complexityIndicators.some(indicator => lowerRequest.includes(indicator))) {
+      analysis.complexity = 'high';
+    } else if (lowerRequest.includes('minor') || lowerRequest.includes('small')) {
+      analysis.complexity = 'low';
+    } else {
+      analysis.complexity = 'medium';
+    }
+
+    return analysis;
+  }
+
+  generateSampleChanges(plan, analysis) {
+    this.log('Generating sample changes based on request analysis...');
+    
+    const changes = [];
+    const request = plan.metadata.request;
+    
+    // This is a simplified implementation. In a real Guardian agent,
+    // this would use AI/ML models to generate actual code changes.
+    // For now, we'll create some example changes based on common patterns.
+    
+    if (analysis.type === 'addition') {
+      if (analysis.scope.includes('components')) {
+        changes.push({
+          type: 'create',
+          path: 'src/components/NewComponent.js',
+          content: this.generateReactComponent('NewComponent')
+        });
+      }
+    }
+    
+    if (analysis.scope.includes('styling')) {
+      changes.push({
+        type: 'modify',
+        path: 'src/App.css',
+        operation: 'append',
+        content: '\n/* New styles added by Guardian */\n.guardian-added {\n  /* Add your styles here */\n}\n'
+      });
+    }
+    
+    // Add a comment to track Guardian changes
+    changes.push({
+      type: 'create',
+      path: 'GUARDIAN_CHANGES.md',
+      content: this.generateChangeLog(plan, analysis)
+    });
+    
+    return changes;
+  }
+
+  generateReactComponent(componentName) {
+    return `import React from 'react';
+
+/**
+ * ${componentName} - Generated by Guardian Agent
+ * ${new Date().toISOString()}
+ */
+function ${componentName}() {
+  return (
+    <div className="guardian-component ${componentName.toLowerCase()}">
+      <h2>${componentName}</h2>
+      <p>This component was generated by Guardian Agent.</p>
+      <p>Please implement the required functionality.</p>
+    </div>
+  );
+}
+
+export default ${componentName};
+`;
+  }
+
+  generateChangeLog(plan, analysis) {
+    return `# Guardian Changes Log
+
+## Change Request
+${plan.metadata.request}
+
+## Analysis
+- **Type**: ${analysis.type}
+- **Scope**: ${analysis.scope.join(', ') || 'general'}
+- **Complexity**: ${analysis.complexity}
+
+## Generated Changes
+This file tracks changes made by the Guardian Agent.
+
+**Timestamp**: ${plan.metadata.timestamp}
+**Branch**: ${this.branchName}
+**Validation Level**: ${plan.metadata.validationLevel}
+
+## Notes
+- This is an automated change generated by Guardian Agent
+- Please review all changes before merging
+- Run validation checks: \`npm run build\` and \`npm test\`
+
+## Rollback
+To rollback these changes:
+\`\`\`bash
+git checkout ${plan.metadata.targetBranch}
+git branch -D ${this.branchName}
+\`\`\`
+`;
+  }
+
+  applyChanges(changes) {
+    this.log(`Applying ${changes.length} changes...`);
+    
+    for (const change of changes) {
+      try {
+        this.applyChange(change);
+        this.log(`✓ Applied: ${change.type} ${change.path}`);
+      } catch (error) {
+        this.log(`✗ Failed to apply: ${change.type} ${change.path} - ${error.message}`);
+        throw error;
+      }
+    }
+  }
+
+  applyChange(change) {
+    const fullPath = path.join(this.workingDir, change.path);
+    const dir = path.dirname(fullPath);
+    
+    // Ensure directory exists
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    switch (change.type) {
+      case 'create':
+        if (fs.existsSync(fullPath)) {
+          throw new Error(`File already exists: ${change.path}`);
+        }
+        fs.writeFileSync(fullPath, change.content);
+        break;
+        
+      case 'modify':
+        if (!fs.existsSync(fullPath)) {
+          throw new Error(`File does not exist: ${change.path}`);
+        }
+        
+        if (change.operation === 'append') {
+          fs.appendFileSync(fullPath, change.content);
+        } else if (change.operation === 'prepend') {
+          const existing = fs.readFileSync(fullPath, 'utf8');
+          fs.writeFileSync(fullPath, change.content + existing);
+        } else {
+          fs.writeFileSync(fullPath, change.content);
+        }
+        break;
+        
+      case 'delete':
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+        }
+        break;
+        
+      default:
+        throw new Error(`Unknown change type: ${change.type}`);
+    }
+  }
+
+  commitChanges(branchName) {
+    this.log('Committing changes...');
+    
+    try {
+      execSync('git add .', { stdio: 'pipe' });
+      
+      const commitMessage = `Guardian Agent: Automated changes
+
+Generated by Guardian Agent
+Branch: ${branchName}
+Timestamp: ${new Date().toISOString()}
+
+[skip ci]`;
+
+      execSync(`git commit -m "${commitMessage}"`, { stdio: 'pipe' });
+      this.log('Changes committed successfully');
+    } catch (error) {
+      // If commit fails because there are no changes, that's okay
+      if (error.message.includes('nothing to commit')) {
+        this.log('No changes to commit');
+        return;
+      }
+      throw new Error(`Failed to commit changes: ${error.message}`);
+    }
+  }
+
+  async run() {
+    try {
+      this.log('Starting patch generation phase...');
+      
+      const plan = this.loadPlan();
+      this.branchName = this.generateBranchName(plan.metadata.request);
+      
+      const branchName = this.createWorkingBranch(this.branchName);
+      const analysis = this.analyzeChangeRequest(plan.metadata.request);
+      const changes = this.generateSampleChanges(plan, analysis);
+      
+      this.applyChanges(changes);
+      this.commitChanges(branchName);
+      
+      // Save patch info for next phases
+      const patchInfo = {
+        branchName,
+        analysis,
+        changes: changes.map(c => ({ type: c.type, path: c.path })),
+        timestamp: new Date().toISOString()
+      };
+      
+      fs.writeFileSync('guardian-patch.json', JSON.stringify(patchInfo, null, 2));
+      
+      this.log('Patch generation completed successfully');
+      return patchInfo;
+    } catch (error) {
+      this.log(`Patch generation failed: ${error.message}`);
+      throw error;
+    }
+  }
+}
+
+// CLI handling
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const options = {};
+  
+  for (let i = 0; i < args.length; i += 2) {
+    const key = args[i].replace(/^--/, '');
+    const value = args[i + 1];
+    options[key] = value;
+  }
+  
+  return options;
+}
+
+// Run if called directly
+if (require.main === module) {
+  const options = parseArgs();
+  const generator = new GuardianPatchGenerator(options);
+  
+  generator.run().catch(error => {
+    console.error('Patch generation failed:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = GuardianPatchGenerator;

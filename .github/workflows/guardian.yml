@@ -1,0 +1,155 @@
+name: Guardian Agent Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      change_request:
+        description: 'Change request description'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch for the changes'
+        required: false
+        default: 'main'
+        type: string
+      max_runtime_minutes:
+        description: 'Maximum runtime in minutes'
+        required: false
+        default: '30'
+        type: number
+      enable_auto_merge:
+        description: 'Enable automatic merge after validation'
+        required: false
+        default: false
+        type: boolean
+      validation_level:
+        description: 'Validation level (basic, standard, thorough)'
+        required: false
+        default: 'standard'
+        type: choice
+        options:
+          - basic
+          - standard
+          - thorough
+
+env:
+  NODE_VERSION: '18'
+  GUARDIAN_MAX_RUNTIME: ${{ github.event.inputs.max_runtime_minutes || '30' }}
+  GUARDIAN_AUTO_MERGE: ${{ github.event.inputs.enable_auto_merge || 'false' }}
+  GUARDIAN_VALIDATION_LEVEL: ${{ github.event.inputs.validation_level || 'standard' }}
+
+jobs:
+  guardian-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(github.event.inputs.max_runtime_minutes || '30') }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Initialize Guardian Agent
+        id: init
+        run: |
+          echo "Starting Guardian Agent workflow"
+          echo "Change request: ${{ github.event.inputs.change_request }}"
+          echo "Target branch: ${{ github.event.inputs.target_branch || 'main' }}"
+          echo "Max runtime: ${{ env.GUARDIAN_MAX_RUNTIME }} minutes"
+          echo "Auto-merge: ${{ env.GUARDIAN_AUTO_MERGE }}"
+          echo "Validation level: ${{ env.GUARDIAN_VALIDATION_LEVEL }}"
+          
+          # Set dynamic branch name
+          BRANCH_NAME="guardian/$(date +%Y%m%d-%H%M%S)-$(echo '${{ github.event.inputs.change_request }}' | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]\n' '-' | head -c 20)"
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Phase 1 - Planning
+        id: planning
+        run: |
+          echo "Starting Planning Phase"
+          node scripts/guardian/planning.js \
+            --request="${{ github.event.inputs.change_request }}" \
+            --target="${{ github.event.inputs.target_branch || 'main' }}" \
+            --validation="${{ env.GUARDIAN_VALIDATION_LEVEL }}"
+
+      - name: Phase 2 - Patch Generation
+        id: patch_generation
+        run: |
+          echo "Starting Patch Generation Phase"
+          node scripts/guardian/patch-generation.js \
+            --plan="guardian-plan.json" \
+            --branch="${{ steps.init.outputs.branch_name }}"
+
+      - name: Phase 3 - Static Validation
+        id: static_validation
+        run: |
+          echo "Starting Static Validation Phase"
+          node scripts/guardian/static-validation.js \
+            --branch="${{ steps.init.outputs.branch_name }}" \
+            --validation="${{ env.GUARDIAN_VALIDATION_LEVEL }}"
+
+      - name: Phase 4 - Runtime Validation
+        id: runtime_validation
+        if: env.GUARDIAN_VALIDATION_LEVEL != 'basic'
+        run: |
+          echo "Starting Runtime Validation Phase"
+          node scripts/guardian/runtime-validation.js \
+            --branch="${{ steps.init.outputs.branch_name }}" \
+            --validation="${{ env.GUARDIAN_VALIDATION_LEVEL }}"
+
+      - name: Phase 5 - Critique & Refinement
+        id: critique_refinement
+        if: steps.static_validation.outcome == 'failure' || steps.runtime_validation.outcome == 'failure'
+        run: |
+          echo "Starting Critique & Refinement Phase"
+          node scripts/guardian/critique-refinement.js \
+            --branch="${{ steps.init.outputs.branch_name }}" \
+            --static-result="${{ steps.static_validation.outcome }}" \
+            --runtime-result="${{ steps.runtime_validation.outcome }}"
+
+      - name: Create Pull Request
+        id: create_pr
+        if: success()
+        run: |
+          echo "Creating Pull Request"
+          node scripts/guardian/create-pr.js \
+            --branch="${{ steps.init.outputs.branch_name }}" \
+            --target="${{ github.event.inputs.target_branch || 'main' }}" \
+            --request="${{ github.event.inputs.change_request }}"
+
+      - name: Auto-merge (if enabled)
+        id: auto_merge
+        if: env.GUARDIAN_AUTO_MERGE == 'true' && success()
+        run: |
+          echo "Attempting auto-merge"
+          node scripts/guardian/auto-merge.js \
+            --pr-number="${{ steps.create_pr.outputs.pr_number }}" \
+            --validation="${{ env.GUARDIAN_VALIDATION_LEVEL }}"
+
+      - name: Cleanup on failure
+        if: failure()
+        run: |
+          echo "Cleaning up failed Guardian run"
+          node scripts/guardian/cleanup.js \
+            --branch="${{ steps.init.outputs.branch_name }}" \
+            --keep-artifacts=true
+
+      - name: Upload Guardian artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardian-artifacts
+          path: |
+            guardian-*.json
+            guardian-*.log
+          retention-days: 7
