@@ -1,0 +1,1 @@
+<content for ClientDetail.tsx>
