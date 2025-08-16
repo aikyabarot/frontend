@@ -1,0 +1,1 @@
+<candidateStatus test content>
